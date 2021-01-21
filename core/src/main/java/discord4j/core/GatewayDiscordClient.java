@@ -24,6 +24,7 @@ import discord4j.common.ReactorResources;
 import discord4j.common.store.action.read.ReadActions;
 import discord4j.common.util.Snowflake;
 import discord4j.core.event.EventDispatcher;
+import discord4j.core.event.ReactiveEventAdapter;
 import discord4j.core.event.domain.Event;
 import discord4j.core.object.Invite;
 import discord4j.core.object.Region;
@@ -42,6 +43,7 @@ import discord4j.discordjson.json.*;
 import discord4j.discordjson.json.gateway.GuildMembersChunk;
 import discord4j.discordjson.json.gateway.RequestGuildMembers;
 import discord4j.discordjson.json.gateway.StatusUpdate;
+import discord4j.discordjson.possible.Possible;
 import discord4j.gateway.GatewayClient;
 import discord4j.gateway.GatewayClientGroup;
 import discord4j.gateway.json.GatewayPayload;
@@ -55,7 +57,6 @@ import discord4j.voice.VoiceConnectionRegistry;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.MonoProcessor;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 
@@ -68,6 +69,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+
+import static discord4j.common.LogUtil.format;
 
 /**
  * An aggregation of all dependencies Discord4J requires to operate with the Discord Gateway, REST API and Voice
@@ -88,7 +91,7 @@ public class GatewayDiscordClient implements EntityRetriever {
 
     private final DiscordClient discordClient;
     private final GatewayResources gatewayResources;
-    private final MonoProcessor<Void> closeProcessor;
+    private final Mono<Void> onDisconnect;
     private final GatewayClientGroup gatewayClientGroup;
     private final VoiceConnectionFactory voiceConnectionFactory;
     private final VoiceConnectionRegistry voiceConnectionRegistry;
@@ -96,13 +99,13 @@ public class GatewayDiscordClient implements EntityRetriever {
     private final Set<String> completingChunkNonces;
 
     public GatewayDiscordClient(DiscordClient discordClient, GatewayResources gatewayResources,
-                                MonoProcessor<Void> closeProcessor, GatewayClientGroup gatewayClientGroup,
+                                Mono<Void> onDisconnect, GatewayClientGroup gatewayClientGroup,
                                 VoiceConnectionFactory voiceConnectionFactory,
                                 EntityRetrievalStrategy entityRetrievalStrategy,
                                 Set<String> completingChunkNonces) {
         this.discordClient = discordClient;
         this.gatewayResources = gatewayResources;
-        this.closeProcessor = closeProcessor;
+        this.onDisconnect = onDisconnect;
         this.gatewayClientGroup = gatewayClientGroup;
         this.voiceConnectionFactory = voiceConnectionFactory;
         this.voiceConnectionRegistry = new LocalVoiceConnectionRegistry();
@@ -416,11 +419,12 @@ public class GatewayDiscordClient implements EntityRetriever {
      * disconnected.
      */
     public Mono<Void> onDisconnect() {
-        return closeProcessor;
+        return onDisconnect;
     }
 
     /**
-     * Retrieves a {@link Flux} with elements of the given {@link Event} type.
+     * Retrieves a {@link Flux} with elements of the given {@link Event} type. This {@link Flux} has to be subscribed to
+     * in order to start processing. See {@link Event} class for the list of possible event classes.
      * <p>
      * <strong>Note: </strong> Errors occurring while processing events will terminate your sequence. If you wish to use
      * a version capable of handling errors for you, use {@link #on(Class, Function)}. See
@@ -450,26 +454,25 @@ public class GatewayDiscordClient implements EntityRetriever {
      */
     public <E extends Event> Flux<E> on(Class<E> eventClass) {
         return getEventDispatcher().on(eventClass)
-                .subscriberContext(ctx -> ctx.put(LogUtil.KEY_GATEWAY_ID, Integer.toHexString(hashCode())));
+                .contextWrite(ctx -> ctx.put(LogUtil.KEY_GATEWAY_ID, Integer.toHexString(hashCode())));
     }
 
     /**
-     * Retrieves a {@link Flux} with elements of the given {@link Event} type, processing them through a given
-     * {@link Function}. Errors occurring within the mapper will be logged and discarded, preventing the termination of
-     * the "infinite" event sequence.
+     * Retrieves a {@link Flux} with elements of the given {@link Event} type, to be processed through a given
+     * {@link Function} upon subscription. Errors occurring within the mapper will be logged and discarded, preventing
+     * the termination of the "infinite" event sequence. See {@link Event} class for the list of possible event classes.
      * <p>
      * There are multiple ways of using this event handling method, for example:
      * <pre>
-     * client.on(MessageCreateEvent.class, event -> {
+     * client.on(MessageCreateEvent.class, event -&gt; {
      *         // myCodeThatMightThrow should return a Reactor type (Mono or Flux)
      *         return myCodeThatMightThrow(event);
      *     })
      *     .subscribe();
      *
-     * client.on(MessageCreateEvent.class, event -> {
-     *         // myCodeThatMightThrow *can* be blocking
-     *         myCodeThatMightThrow(event);
-     *         return Mono.empty(); // but we have to return a Reactor type
+     * client.on(MessageCreateEvent.class, event -&gt; {
+     *         // myCodeThatMightThrow *can* be blocking, so wrap it in a Reactor type
+     *         return Mono.fromRunnable(() -&gt; myCodeThatMightThrow(event));
      *     })
      *     .subscribe();
      * </pre>
@@ -485,13 +488,49 @@ public class GatewayDiscordClient implements EntityRetriever {
      * @return a new {@link Flux} with the type resulting from the given event mapper
      */
     public <E extends Event, T> Flux<T> on(Class<E> eventClass, Function<E, Publisher<T>> mapper) {
-        return on(eventClass)
-                .flatMap(event -> Flux.defer(() -> mapper.apply(event))
-                        .onErrorResume(t -> {
-                            log.warn("Error while handling {} in shard [{}]", eventClass.getSimpleName(),
-                                    event.getShardInfo().format(), t);
-                            return Mono.empty();
-                        }));
+        return getEventDispatcher().on(eventClass, mapper)
+                .contextWrite(ctx -> ctx.put(LogUtil.KEY_GATEWAY_ID, Integer.toHexString(hashCode())));
+    }
+
+    /**
+     * Applies a given {@code adapter} to all events from this dispatcher. Errors occurring within the mapper will be
+     * logged and discarded, preventing the termination of the "infinite" event sequence. This variant allows you to
+     * have a single subscriber to this dispatcher, which is useful to collect all startup events.
+     * <p>
+     * A standard approach to this method is to subclass {@link ReactiveEventAdapter}, overriding the methods you want
+     * to listen for:
+     * <pre>
+     * client.on(new ReactiveEventAdapter() {
+     *
+     *     public Publisher&lt;?&gt; onReady(ReadyEvent event) {
+     *         return Mono.fromRunnable(() -&gt;
+     *                 System.out.println("Connected as " + event.getSelf().getTag()));
+     *     }
+     *
+     *     public Publisher&lt;?&gt; onMessageCreate(MessageCreateEvent event) {
+     *         if (event.getMessage().getContent().equals("!ping")) {
+     *             return event.getMessage().getChannel()
+     *                     .flatMap(channel -&gt; channel.createMessage("Pong!"));
+     *         }
+     *         return Mono.empty();
+     *     }
+     *
+     * }).subscribe(); // nothing happens until you subscribe
+     * </pre>
+     * <p>
+     * Each method requires a {@link Publisher} return like {@link Mono} or {@link Flux} and all errors
+     * will be logged and discarded. To use a synchronous implementation you can wrap your code with
+     * {@link Mono#fromRunnable(Runnable)}.
+     * <p>
+     * Continuing the chain will require your own error handling strategy.
+     * Check the docs for {@link #on(Class)} for more details.
+     *
+     * @param adapter an adapter meant to be subclassed with its appropriate methods overridden
+     * @return a new {@link Flux} with the type resulting from the given event mapper
+     */
+    public Flux<Event> on(ReactiveEventAdapter adapter) {
+        return getEventDispatcher().on(adapter)
+                .contextWrite(ctx -> ctx.put(LogUtil.KEY_GATEWAY_ID, Integer.toHexString(hashCode())));
     }
 
     /**
@@ -522,11 +561,14 @@ public class GatewayDiscordClient implements EntityRetriever {
      * the {@link Flux}.
      */
     public Flux<Member> requestMembers(Snowflake guildId, Set<Snowflake> userIds) {
-        return requestMembers(RequestGuildMembers.builder()
-                .guildId(guildId.asString())
-                .userIds(userIds.stream().map(Snowflake::asString).collect(Collectors.toList()))
-                .limit(0)
-                .build());
+        return Flux.fromIterable(userIds)
+                .map(Snowflake::asString)
+                .buffer(100)
+                .concatMap(userIdBuffer -> requestMembers(RequestGuildMembers.builder()
+                        .guildId(guildId.asString())
+                        .userIds(userIdBuffer)
+                        .limit(0)
+                        .build()));
     }
 
     /**
@@ -540,7 +582,8 @@ public class GatewayDiscordClient implements EntityRetriever {
      */
     public Flux<Member> requestMembers(RequestGuildMembers request) {
         try {
-            ValidationUtil.validateRequestGuildMembers(request, gatewayResources.getIntents());
+            // client-side validation is required to avoid indefinitely waiting for a response
+            ValidationUtil.validateRequestGuildMembers(request, Possible.of(gatewayResources.getIntents()));
         } catch (Throwable t) {
             return Flux.error(t);
         }
@@ -550,7 +593,7 @@ public class GatewayDiscordClient implements EntityRetriever {
         Supplier<Flux<Member>> incomingMembers = () -> gatewayClientGroup.find(shardId)
                 .map(gatewayClient -> gatewayClient.dispatch()
                         .ofType(GuildMembersChunk.class)
-                        .takeUntilOther(closeProcessor)
+                        .takeUntilOther(onDisconnect)
                         .filter(chunk -> chunk.nonce().toOptional()
                                 .map(s -> s.equals(nonce))
                                 .orElse(false))
@@ -559,7 +602,7 @@ public class GatewayDiscordClient implements EntityRetriever {
                                 .map(data -> new Member(this, data, guildId.asLong()))
                                 .collect(Collectors.toList())))
                 .orElseThrow(() -> new IllegalStateException("Unable to find gateway client"));
-        return getGuildById(guildId) // check if this operation is valid otherwise request+waiting will hang
+        return Flux.deferContextual(ctx -> getGuildById(guildId)
                 .then(gatewayClientGroup.unicast(ShardGatewayPayload.requestGuildMembers(
                         RequestGuildMembers.builder()
                                 .from(request)
@@ -571,7 +614,8 @@ public class GatewayDiscordClient implements EntityRetriever {
                                 completingChunkNonces.add(nonce);
                             }
                         })))
-                .thenMany(Flux.defer(incomingMembers));
+                .thenMany(Flux.defer(incomingMembers))
+                .doOnComplete(() -> log.debug(format(ctx, "Member request completed: {}"), request)));
     }
 
     /**

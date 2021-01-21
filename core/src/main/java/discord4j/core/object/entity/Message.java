@@ -31,6 +31,7 @@ import discord4j.core.util.EntityUtil;
 import discord4j.discordjson.json.MessageData;
 import discord4j.discordjson.json.SuppressEmbedsRequest;
 import discord4j.discordjson.json.UserData;
+import discord4j.discordjson.possible.Possible;
 import discord4j.rest.entity.RestChannel;
 import discord4j.rest.entity.RestMessage;
 import discord4j.rest.util.PaginationUtil;
@@ -373,9 +374,9 @@ public final class Message implements Entity {
     }
 
     /**
-     * Returns the {@link MessageReference} in this message (Server Following feature), if present.
+     * Returns the {@link MessageReference} sent with crossposted messages and replies, if present.
      *
-     * @return The {@code MessageReference}, if present.
+     * @return The {@link MessageReference} sent with crossposted messages and replies, if present.
      */
     public Optional<MessageReference> getMessageReference() {
         return data.messageReference().toOptional()
@@ -432,6 +433,29 @@ public final class Message implements Entity {
      */
     public Type getType() {
         return Type.of(data.type());
+    }
+
+    /**
+     * Gets the stickers sent with the message.
+     *
+     * @return The stickers sent with the message.
+     */
+    public List<Sticker> getStickers() {
+        return data.stickers().toOptional()
+            .orElse(Collections.emptyList())
+            .stream()
+            .map(data -> new Sticker(gateway, data))
+            .collect(Collectors.toList());
+    }
+
+    /**
+     * Returns the message associated with the {@link MessageReference}, if present.
+     *
+     * @return The message associated with the {@link MessageReference}, if present.
+     */
+    public Optional<Message> getReferencedMessage() {
+        return Possible.flatOpt(data.referencedMessage())
+            .map(data -> new Message(gateway, data));
     }
 
     /**
@@ -756,7 +780,10 @@ public final class Message implements Entity {
         GUILD_DISCOVERY_DISQUALIFIED(14),
 
         /** A message created when the Guild is requalified for Discovery Feature **/
-        GUILD_DISCOVERY_REQUALIFIED(15);
+        GUILD_DISCOVERY_REQUALIFIED(15),
+
+        /** A message created with a reply */
+        REPLY(19);
 
         /**
          * The underlying value as represented by Discord.
