@@ -259,17 +259,29 @@ public final class Member extends User {
                         .limit(1)
                         .build();
 
-                return getClient().requestMembers(request)
-                        .singleOrEmpty()
-                        .flatMap(Member::getPresence)
-                        // IllegalArgumentException can be thrown during request validation if intents are not matching the request
-                        .onErrorResume(IllegalArgumentException.class, err -> Mono.empty());
+                return getClient().requestMemberChunks(request)
+                    .singleOrEmpty()
+                    .flatMap(chunk -> Mono.justOrEmpty(chunk.presences().toOptional())
+                            .flatMapIterable(list -> list)
+                            .next()
+                            .map(Presence::new))
+                    // IllegalArgumentException can be thrown during request validation if intents are not matching the request
+                    .onErrorResume(IllegalArgumentException.class, err -> Mono.empty());
             });
         }
 
         return Mono.from(getClient().getGatewayResources().getStore()
                 .execute(ReadActions.getPresenceById(getGuildId().asLong(), getId().asLong())))
                 .map(Presence::new);
+    }
+
+    /**
+     * Gets whether the user has not yet passed the guild's Membership Screening requirements.
+     *
+      * @return Whether the user has not yet passed the guild's Membership Screening requirements.
+     */
+    public boolean isPending() {
+        return data.pending().toOptional().orElse(false);
     }
 
     /**
