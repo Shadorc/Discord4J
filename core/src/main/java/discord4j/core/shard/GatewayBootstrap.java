@@ -33,11 +33,10 @@ import discord4j.core.event.EventDispatcher;
 import discord4j.core.event.dispatch.DispatchContext;
 import discord4j.core.event.dispatch.DispatchEventMapper;
 import discord4j.core.event.domain.Event;
+import discord4j.core.object.presence.ClientPresence;
 import discord4j.core.object.entity.Guild;
 import discord4j.core.object.entity.Member;
-import discord4j.core.object.presence.Presence;
 import discord4j.core.retriever.EntityRetrievalStrategy;
-import discord4j.discordjson.json.ActivityUpdateRequest;
 import discord4j.discordjson.json.gateway.GuildMembersChunk;
 import discord4j.discordjson.json.gateway.StatusUpdate;
 import discord4j.gateway.*;
@@ -120,7 +119,7 @@ public class GatewayBootstrap<O extends GatewayOptions> {
     private EventDispatcher eventDispatcher = null;
     private Store store = null;
     private MemberRequestFilter memberRequestFilter = null;
-    private Function<ShardInfo, StatusUpdate> initialPresence = shard -> null;
+    private Function<ShardInfo, ClientPresence> initialPresence = shard -> null;
     private Function<ShardInfo, SessionInfo> resumeOptions = shard -> null;
     private IntentSet intents = IntentSet.nonPrivileged();
     private Boolean guildSubscriptions = null;
@@ -299,45 +298,27 @@ public class GatewayBootstrap<O extends GatewayOptions> {
     }
 
     /**
-     * Set a {@link Function} to determine the {@link StatusUpdate} that each joining shard should use when identifying
+     * Set a {@link Function} to determine the {@link ClientPresence} that each joining shard should use when identifying
      * to the Gateway. Defaults to no status given.
-     * <p>
-     * {@link StatusUpdate} instances can be built through factories in {@link Presence}:
-     * <ul>
-     *     <li>{@link Presence#online()} and {@link Presence#online(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#idle()} and {@link Presence#idle(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#doNotDisturb()} and {@link Presence#doNotDisturb(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#invisible()}</li>
-     * </ul>
      *
-     * @param initialPresence a {@link Function} that supplies {@link StatusUpdate} instances from a given
-     * {@link ShardInfo}
+     * @param initialPresence a {@link Function} that supplies {@link ClientPresence} instances from a given {@link ShardInfo}
      * @return this builder
-     * @deprecated use {@link #setInitialStatus(Function)}
      */
-    @Deprecated
-    public GatewayBootstrap<O> setInitialPresence(Function<ShardInfo, StatusUpdate> initialPresence) {
+    public GatewayBootstrap<O> setInitialPresence(Function<ShardInfo, ClientPresence> initialPresence) {
         this.initialPresence = Objects.requireNonNull(initialPresence, "initialPresence");
         return this;
     }
 
     /**
-     * Set a {@link Function} to determine the {@link StatusUpdate} that each joining shard should use when identifying
+     * Set a {@link Function} to determine the {@link ClientPresence} that each joining shard should use when identifying
      * to the Gateway. Defaults to no status given.
-     * <p>
-     * {@link StatusUpdate} instances can be built through factories in {@link Presence}:
-     * <ul>
-     *     <li>{@link Presence#online()} and {@link Presence#online(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#idle()} and {@link Presence#idle(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#doNotDisturb()} and {@link Presence#doNotDisturb(ActivityUpdateRequest)}</li>
-     *     <li>{@link Presence#invisible()}</li>
-     * </ul>
      *
-     * @param initialStatus a {@link Function} that supplies {@link StatusUpdate} instances from a given
-     * {@link ShardInfo}
+     * @param initialStatus a {@link Function} that supplies {@link ClientPresence} instances from a given {@link ShardInfo}
      * @return this builder
+     * @deprecated use {@link #setInitialPresence(Function)}
      */
-    public GatewayBootstrap<O> setInitialStatus(Function<ShardInfo, StatusUpdate> initialStatus) {
+    @Deprecated
+    public GatewayBootstrap<O> setInitialStatus(Function<ShardInfo, ClientPresence> initialStatus) {
         this.initialPresence = Objects.requireNonNull(initialStatus, "initialStatus");
         return this;
     }
@@ -675,12 +656,13 @@ public class GatewayBootstrap<O extends GatewayOptions> {
                             }))
                             .cache();
 
-                    Flux<ShardInfo> connections = b.shardingStrategy.getShards(count)
-                            .groupBy(shard -> shard.getIndex() % b.shardingStrategy.getMaxConcurrency())
-                            .flatMap(group -> group.concatMap(shard -> acquireConnection(b, shard, clientFactory,
-                                    gateway, shardCoordinator, store, eventDispatcher, clientGroup,
-                                    onCloseSink, dispatchMapper, completingChunkNonces,
-                                    destroySequence.contextWrite(buildContext(gateway, shard)))));
+                    Flux<ShardInfo> connections = b.shardingStrategy.getMaxConcurrency(b.client)
+                            .flatMapMany(maxConcurrency -> b.shardingStrategy.getShards(count)
+                                .groupBy(shard -> shard.getIndex() % maxConcurrency)
+                                .flatMap(group -> group.concatMap(shard -> acquireConnection(b, shard, clientFactory,
+                                        gateway, shardCoordinator, store, eventDispatcher, clientGroup,
+                                        onCloseSink, dispatchMapper, completingChunkNonces,
+                                        destroySequence.contextWrite(buildContext(gateway, shard)), maxConcurrency))));
 
                     Supplier<Mono<Void>> withEventDispatcherFunction = () ->
                             Flux.from(b.dispatcherFunction.apply(eventDispatcher))
@@ -751,18 +733,20 @@ public class GatewayBootstrap<O extends GatewayOptions> {
                                               Sinks.Empty<Void> onCloseSink,
                                               DispatchEventMapper dispatchMapper,
                                               Set<String> completingChunkNonces,
-                                              Mono<Void> destroySequence) {
+                                              Mono<Void> destroySequence,
+                                              int maxConcurrency) {
         return Mono.deferContextual(ctx ->
                 Mono.<ShardInfo>create(sink -> {
-                    StatusUpdate initial = Optional.ofNullable(b.initialPresence.apply(shard)).orElse(null);
+                    StatusUpdate initial = Optional.ofNullable(b.initialPresence.apply(shard))
+                            .map(ClientPresence::getStatusUpdate)
+                            .orElse(null);
                     IdentifyOptions identify = IdentifyOptions.builder(shard)
                             .initialStatus(initial)
                             .intents(b.intents)
                             .guildSubscriptions(b.guildSubscriptions)
                             .resumeSession(b.resumeOptions.apply(shard))
                             .build();
-                    PayloadTransformer limiter = shardCoordinator.getIdentifyLimiter(shard,
-                            b.shardingStrategy.getMaxConcurrency());
+                    PayloadTransformer limiter = shardCoordinator.getIdentifyLimiter(shard, maxConcurrency);
                     GatewayReactorResources resources = gateway.getGatewayResources().getGatewayReactorResources();
                     ReconnectOptions reconnectOptions = initReconnectOptions(resources);
                     GatewayOptions options = new GatewayOptions(client.getCoreResources().getToken(),
