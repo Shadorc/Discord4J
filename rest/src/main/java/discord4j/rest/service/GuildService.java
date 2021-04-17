@@ -103,6 +103,14 @@ public class GuildService extends RestService {
                 .flatMapMany(Flux::fromArray);
     }
 
+    public Flux<MemberData> searchGuildMembers(long guildId, Map<String, Object> queryParams) {
+        return Routes.SEARCH_GUILD_MEMBERS_GET.newRequest(guildId)
+            .query(queryParams)
+            .exchange(getRouter())
+            .bodyToMono(MemberData[].class)
+            .flatMapMany(Flux::fromArray);
+    }
+
     public Mono<MemberData> addGuildMember(long guildId, long userId, GuildMemberAddRequest request) {
         return Routes.GUILD_MEMBER_ADD.newRequest(guildId, userId)
                 .body(request)
@@ -310,14 +318,14 @@ public class GuildService extends RestService {
             .bodyToMono(GuildPreviewData.class);
     }
 
-    public Mono<Void> modifySelfVoiceState(long guildId, UpdateSelfVoiceStateRequest request) {
+    public Mono<Void> modifySelfVoiceState(long guildId, UpdateCurrentUserVoiceStateRequest request) {
         return Routes.SELF_VOICE_STATE_MODIFY.newRequest(guildId)
             .body(request)
             .exchange(getRouter())
             .bodyToMono(Void.class);
     }
 
-    public Mono<Void> modifyOthersVoiceState(long guildId, long userId, UpdateOthersVoiceStateRequest request) {
+    public Mono<Void> modifyOthersVoiceState(long guildId, long userId, UpdateUserVoiceStateRequest request) {
         return Routes.OTHERS_VOICE_STATE_MODIFY.newRequest(guildId, userId)
             .body(request)
             .exchange(getRouter())

@@ -488,6 +488,14 @@ public abstract class Routes {
     public static final Route GUILD_MEMBERS_LIST = Route.get("/guilds/{guild.id}/members");
 
     /**
+     * Returns a list of guild member objects whose username or nickname starts with a provided string.
+     *
+     * @see <a href="https://discord.com/developers/docs/resources/guild#search-guild-members">
+     * https://discord.com/developers/docs/resources/guild#search-guild-members</a>
+     */
+    public static final Route SEARCH_GUILD_MEMBERS_GET = Route.get("/guilds/{guild.id}/members/search");
+
+    /**
      * Adds a user to the guild, provided you have a valid oauth2 access token for the user with the guilds.join scope.
      * Returns a 201 Created with the guild member as the body. Fires a Guild Member Add Gateway event. Requires the
      * bot to have the CREATE_INSTANT_INVITE permission.
@@ -876,14 +884,6 @@ public abstract class Routes {
      * https://discord.com/developers/docs/resources/user#leave-guild</a>
      */
     public static final Route GUILD_LEAVE = Route.delete("/users/@me/guilds/{guild.id}");
-
-    /**
-     * Returns a list of DM channel objects.
-     *
-     * @see <a href="https://discord.com/developers/docs/resources/user#get-user-dms">
-     * https://discord.com/developers/docs/resources/user#get-user-dms</a>
-     */
-    public static final Route USER_DMS_GET = Route.get("/users/@me/channels");
 
     /**
      * Create a new DM channel with a user. Returns a DM channel object.

@@ -19,8 +19,8 @@ package discord4j.core.object;
 import discord4j.core.GatewayDiscordClient;
 import discord4j.core.object.entity.Message;
 import discord4j.discordjson.json.*;
-import discord4j.discordjson.possible.Possible;
 import discord4j.rest.util.Color;
+import reactor.util.annotation.Nullable;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -521,6 +521,16 @@ public final class Embed implements DiscordObject {
         }
 
         /**
+         * Gets a proxied URL of the video.
+         *
+         * @return A proxied URL of the video.
+         */
+        @Nullable
+        public String getProxyUrl() {
+            return data.proxyUrl().toOptional().orElse(null);
+        }
+
+        /**
          * Gets the height of the video.
          *
          * @return The height of the video.
@@ -589,7 +599,7 @@ public final class Embed implements DiscordObject {
          * @return The URL of the provider.
          */
         public Optional<String> getUrl() {
-            return Possible.flatOpt(data.url());
+            return data.url().toOptional();
         }
     }
 

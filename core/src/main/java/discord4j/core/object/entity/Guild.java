@@ -78,7 +78,7 @@ public final class Guild implements Entity {
     private final GuildData data;
 
     /**
-     * Constructs an {@code Guild} with an associated {@link GatewayDiscordClient} and Discord data.
+     * Constructs a {@code Guild} with an associated {@link GatewayDiscordClient} and Discord data.
      *
      * @param gateway The {@link GatewayDiscordClient} associated to this object, must be non-null.
      * @param data The raw data as represented by Discord, must be non-null.
@@ -311,7 +311,7 @@ public final class Guild implements Entity {
      * @return The number of boosts this server currently has, if present.
      */
     public OptionalInt getPremiumSubscriptionCount() {
-        return Possible.flatOpt(data.premiumSubscriptionCount())
+        return data.premiumSubscriptionCount().toOptional()
                 .map(OptionalInt::of)
                 .orElse(OptionalInt.empty());
     }
@@ -324,7 +324,7 @@ public final class Guild implements Entity {
      * to "en-US".
      */
     public Locale getPreferredLocale() {
-        return new Locale.Builder().setLanguageTag(data.preferredLocale().orElse("en-US")).build();
+        return new Locale.Builder().setLanguageTag(data.preferredLocale()).build();
     }
 
     /**
@@ -1689,11 +1689,14 @@ public final class Guild implements Entity {
     /** Describes system channel flags. */
     public enum SystemChannelFlag {
 
-        /** Member join notifications are suppressed. */
+        /** Suppress member join notifications. */
         SUPPRESS_JOIN_NOTIFICATIONS(0),
 
-        /** Server boost notifications are suppressed. */
-        SUPPRESS_PREMIUM_SUBSCRIPTIONS(1);
+        /** Suppress server boost notifications. */
+        SUPPRESS_PREMIUM_SUBSCRIPTIONS(1),
+
+        /** Suppress server setup tips. */
+        SUPPRESS_GUILD_REMINDER_NOTIFICATIONS(2);
 
         /** The underlying value as represented by Discord. */
         private final int value;
